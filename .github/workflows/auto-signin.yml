@@ -3,7 +3,7 @@ name: Auto Sign-in Workflow
 on:
   schedule:
     # 设置定时触发规则，每5分钟执行一次
-    - cron: "*/5 * * * *"
+   - cron: "0 8 * * *"  # 每天早上 8 点执行
   push:
     # 每次向 main 分支推送时触发
     branches:
