@@ -121,8 +121,9 @@ def run():
     log.info("=" * 50)
 
     token = None
+    signed_in = False  # 新增的标志，记录是否签到成功
 
-    while True:
+    while not signed_in:  # 当未签到成功时，继续循环
         try:
             # 确保 token 有效
             if not token:
@@ -140,6 +141,8 @@ def run():
                     d.get("consecutive", 0),
                     d.get("reward_display", "unknown"),
                 )
+                signed_in = True  # 设置标志为 True，退出循环
+
             elif result.get("code") == 7:
                 # token 过期，重新登录
                 log.warning("[%s] Token 过期，重新登录...", now)
@@ -154,8 +157,15 @@ def run():
                         d.get("consecutive", 0),
                         d.get("reward_display", "unknown"),
                     )
+                    signed_in = True  # 设置标志为 True，退出循环
                 else:
                     log.warning("[%s] 重试签到返回: %s", now, result.get("msg"))
+            
+            # 添加“已签到”的检查条件
+            elif "已签到" in result.get("msg", ""):  # 如果返回的消息中包含“已签到”
+                log.info("[%s] 今天已签到，退出...", now)
+                signed_in = True  # 设置标志为 True，退出循环
+
             else:
                 log.warning("[%s] 签到返回异常: %s", now, json.dumps(result, ensure_ascii=False))
 
