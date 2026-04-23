@@ -32,4 +32,4 @@ jobs:
       # 4. 执行自动签到脚本
       - name: Run auto sign-in script
         run: |
-          python auto_checkin.py  # 直接调用位于根目录的脚本
+          python auto_checkin.py run # 直接调用位于根目录的脚本
