@@ -1,4 +1,4 @@
-name: Auto Sign-in Workflow
+name: Auto_checkin Workflow
 
 on:
   schedule:
