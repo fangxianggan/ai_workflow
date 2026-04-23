@@ -6,14 +6,17 @@ ViewTurbo 自动签到脚本
     python auto_checkin.py start   # 后台启动
     python auto_checkin.py stop    # 停止
     python auto_checkin.py status  # 查看状态
-    python auto_checkin.py run     # 前台运行
+    python auto_checkin.py run     # 前台运行（最多重试3次，间隔10秒）
+
+环境变量:
+    VIEWTURBO_EMAIL     - 登录邮箱（必需）
+    VIEWTURBO_PASSWORD  - 登录密码（必需）
 """
 
 import argparse
 import hashlib
 import json
 import os
-import random
 import signal
 import subprocess
 import sys
@@ -24,13 +27,11 @@ from pathlib import Path
 
 import requests
 
-# ============ 配置 ============
-EMAIL = "fxg9527@gmail.com"
-PASSWORD = "good7453390dong"
-# RANDOM_INTERVALS = [15, 26, 28, 32, 40, 47, 55]  # 随机签到间隔（秒）
-RANDOM_INTERVALS = [15, 26]  # 随机签到间隔（秒）
+# ============ 配置（从环境变量读取）============
+EMAIL = os.getenv("VIEWTURBO_EMAIL")
+PASSWORD = os.getenv("VIEWTURBO_PASSWORD")
 API_BASE = "https://api.viewturbo.com"
-# ==============================
+# =============================================
 
 # 日志配置
 log_file = Path(__file__).parent / "checkin.log"
@@ -81,6 +82,8 @@ def md5(text: str) -> str:
 
 def login() -> str:
     """登录获取 token"""
+    if not EMAIL or not PASSWORD:
+        raise Exception("环境变量 VIEWTURBO_EMAIL 和 VIEWTURBO_PASSWORD 未设置")
     url = f"{API_BASE}/appuser/reglogin?platform=web&cur_version=0.0.0&lang=hk"
     payload = {"email": EMAIL, "password": md5(PASSWORD)}
     resp = requests.post(url, json=payload, timeout=15)
@@ -111,25 +114,28 @@ def _shutdown(signum, frame):
 
 
 def run():
-    """前台运行签到循环"""
+    """前台运行签到循环（最多重试3次，每次间隔10秒）"""
+    # 检查环境变量
+    if not EMAIL or not PASSWORD:
+        log.error("请设置环境变量 VIEWTURBO_EMAIL 和 VIEWTURBO_PASSWORD")
+        sys.exit(1)
+
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
     write_pid()
 
     log.info("=" * 50)
-    log.info("ViewTurbo 自动签到启动 (随机间隔 %s 秒)", RANDOM_INTERVALS)
+    log.info("ViewTurbo 自动签到启动 (最多重试3次，间隔10秒)")
     log.info("=" * 50)
 
-    token = None
-    signed_in = False  # 新增的标志，记录是否签到成功
+    MAX_RETRIES = 3
+    RETRY_DELAY = 10  # 秒
 
-    while not signed_in:  # 当未签到成功时，继续循环
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # 确保 token 有效
-            if not token:
-                token = login()
+            log.info("第 %d/%d 次尝试", attempt, MAX_RETRIES)
 
-            # 执行签到
+            token = login()
             result = checkin(token)
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -141,13 +147,11 @@ def run():
                     d.get("consecutive", 0),
                     d.get("reward_display", "unknown"),
                 )
-                signed_in = True  # 设置标志为 True，退出循环
+                sys.exit(0)
 
             elif result.get("code") == 7:
-                # token 过期，重新登录
                 log.warning("[%s] Token 过期，重新登录...", now)
                 token = login()
-                # 用新 token 重试签到
                 result = checkin(token)
                 if result.get("code") == 0:
                     d = result.get("data", {})
@@ -157,14 +161,13 @@ def run():
                         d.get("consecutive", 0),
                         d.get("reward_display", "unknown"),
                     )
-                    signed_in = True  # 设置标志为 True，退出循环
+                    sys.exit(0)
                 else:
                     log.warning("[%s] 重试签到返回: %s", now, result.get("msg"))
-            
-            # 添加“已签到”的检查条件
-            elif "已签到" in result.get("msg", ""):  # 如果返回的消息中包含“已签到”
+
+            elif "已签到" in result.get("msg", ""):
                 log.info("[%s] 今天已签到，退出...", now)
-                signed_in = True  # 设置标志为 True，退出循环
+                sys.exit(0)
 
             else:
                 log.warning("[%s] 签到返回异常: %s", now, json.dumps(result, ensure_ascii=False))
@@ -174,19 +177,23 @@ def run():
         except Exception as e:
             log.error("发生错误: %s", e)
 
-        # 随机等待下次签到
-        interval = random.choice(RANDOM_INTERVALS)
-        log.info("下次签到将在 %d 秒后", interval)
-        time.sleep(interval)
+        if attempt < MAX_RETRIES:
+            log.info("等待 %d 秒后重试...", RETRY_DELAY)
+            time.sleep(RETRY_DELAY)
+
+    log.error("已达到最大重试次数 (%d 次)，签到失败，退出。", MAX_RETRIES)
+    sys.exit(1)
 
 
 def do_start():
     """后台启动服务"""
+    if not EMAIL or not PASSWORD:
+        print("错误: 请设置环境变量 VIEWTURBO_EMAIL 和 VIEWTURBO_PASSWORD")
+        sys.exit(1)
     if is_running():
         pid = read_pid()
         print(f"服务已在运行中 (PID: {pid})")
         return
-    # Windows: 用 pythonw 后台运行
     pythonw = sys.executable.replace("python", "pythonw")
     if not os.path.exists(pythonw):
         pythonw = sys.executable
