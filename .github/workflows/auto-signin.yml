@@ -2,8 +2,7 @@ name: Auto_checkin Workflow
 
 on:
   schedule:
-    # 设置定时触发规则，10点03执行一次
-  - cron: "03 10 * * *"
+  - cron: "*/5 * * * *"   # 每5分钟一次
   push:
     # 每次向 main 分支推送时触发
     branches:
