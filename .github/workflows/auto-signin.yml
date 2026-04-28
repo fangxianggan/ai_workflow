@@ -31,7 +31,6 @@ jobs:
       # 4. 执行自动签到脚本
       - name: Run auto sign-in script
         env:
-         VIEWTURBO_EMAIL: ${{ secrets.VIEWTURBO_EMAIL }}
-         VIEWTURBO_PASSWORD: ${{ secrets.VIEWTURBO_PASSWORD }}
+         VIEWTURBO_ACCOUNTS: ${{ secrets.VIEWTURBO_ACCOUNTS }}
         run: |
           python auto_checkin.py run # 直接调用位于根目录的脚本
