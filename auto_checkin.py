@@ -1,16 +1,15 @@
 """
-ViewTurbo 自动签到脚本
-每隔 20 秒自动签到一次，自动登录刷新 token
+ViewTurbo 自动签到脚本（多账号版）
+支持多个账号顺序签到，通过环境变量配置
+
+环境变量：
+    VIEWTURBO_ACCOUNTS - 账号列表，格式: "email1:pass1,email2:pass2"
 
 用法:
     python auto_checkin.py start   # 后台启动
     python auto_checkin.py stop    # 停止
     python auto_checkin.py status  # 查看状态
-    python auto_checkin.py run     # 前台运行（最多重试3次，间隔10秒）
-
-环境变量:
-    VIEWTURBO_EMAIL     - 登录邮箱（必需）
-    VIEWTURBO_PASSWORD  - 登录密码（必需）
+    python auto_checkin.py run     # 前台运行（多账号顺序签到）
 """
 
 import argparse
@@ -27,11 +26,9 @@ from pathlib import Path
 
 import requests
 
-# ============ 配置（从环境变量读取）============
-EMAIL = os.getenv("VIEWTURBO_EMAIL")
-PASSWORD = os.getenv("VIEWTURBO_PASSWORD")
+# ============ 配置 ============
 API_BASE = "https://api.viewturbo.com"
-# =============================================
+# =============================
 
 # 日志配置
 log_file = Path(__file__).parent / "checkin.log"
@@ -80,12 +77,30 @@ def md5(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def login() -> str:
+def load_accounts():
+    """从环境变量 VIEWTURBO_ACCOUNTS 加载账号列表"""
+    acc_str = os.getenv("VIEWTURBO_ACCOUNTS")
+    if not acc_str:
+        raise Exception("未设置环境变量 VIEWTURBO_ACCOUNTS，格式: email1:pass1,email2:pass2")
+
+    accounts = []
+    for pair in acc_str.split(','):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ':' not in pair:
+            raise ValueError(f"账号格式错误，应为 email:password，却得到: {pair}")
+        email, pwd = pair.split(':', 1)
+        accounts.append({'email': email, 'password': pwd})
+    if not accounts:
+        raise Exception("VIEWTURBO_ACCOUNTS 中没有有效的账号")
+    return accounts
+
+
+def login(email: str, password: str) -> str:
     """登录获取 token"""
-    if not EMAIL or not PASSWORD:
-        raise Exception("环境变量 VIEWTURBO_EMAIL 和 VIEWTURBO_PASSWORD 未设置")
     url = f"{API_BASE}/appuser/reglogin?platform=web&cur_version=0.0.0&lang=hk"
-    payload = {"email": EMAIL, "password": md5(PASSWORD)}
+    payload = {"email": email, "password": md5(password)}
     resp = requests.post(url, json=payload, timeout=15)
     data = resp.json()
     if data.get("code") == 0:
@@ -114,99 +129,120 @@ def _shutdown(signum, frame):
 
 
 def run():
-    """前台运行签到循环（最多重试3次，每次间隔10秒）"""
-    # 检查环境变量
-    if not EMAIL or not PASSWORD:
-        log.error("请设置环境变量 VIEWTURBO_EMAIL 和 VIEWTURBO_PASSWORD")
-        sys.exit(1)
-
+    """前台运行签到循环（多账号顺序签到）"""
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
     write_pid()
 
     log.info("=" * 50)
-    log.info("ViewTurbo 自动签到启动 (最多重试3次，间隔10秒)")
+    log.info("ViewTurbo 自动签到启动 (多账号顺序签到)")
     log.info("=" * 50)
 
+    try:
+        accounts = load_accounts()
+    except Exception as e:
+        log.error("加载账号失败: %s", e)
+        sys.exit(1)
+
+    log.info("共加载 %d 个账号", len(accounts))
+
     MAX_RETRIES = 3
-    RETRY_DELAY = 10  # 秒
+    RETRY_DELAY = 10
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            log.info("第 %d/%d 次尝试", attempt, MAX_RETRIES)
+    for idx, acc in enumerate(accounts, start=1):
+        email = acc['email']
+        password = acc['password']
+        log.info(">>> 正在处理第 %d/%d 个账号: %s", idx, len(accounts), email)
 
-            token = login()
-            result = checkin(token)
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            if result.get("code") == 0:
-                d = result.get("data", {})
-                log.info(
-                    "[%s] 签到成功! 连续 %d 天, 奖励: %s",
-                    now,
-                    d.get("consecutive", 0),
-                    d.get("reward_display", "unknown"),
-                )
-                sys.exit(0)
-
-            elif result.get("code") == 7:
-                log.warning("[%s] Token 过期，重新登录...", now)
-                token = login()
+        success = False
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                log.info("  第 %d/%d 次尝试", attempt, MAX_RETRIES)
+                token = login(email, password)
                 result = checkin(token)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                 if result.get("code") == 0:
                     d = result.get("data", {})
                     log.info(
-                        "[%s] 签到成功! 连续 %d 天, 奖励: %s",
+                        "  [%s] 签到成功! 连续 %d 天, 奖励: %s",
                         now,
                         d.get("consecutive", 0),
-                        d.get("reward_display", "unknown"),
+                        d.get("reward_display", "unknown")
                     )
-                    sys.exit(0)
+                    success = True
+                    break
+
+                elif result.get("code") == 7:
+                    log.warning("  Token 过期，重新登录...")
+                    token = login(email, password)
+                    result = checkin(token)
+                    if result.get("code") == 0:
+                        d = result.get("data", {})
+                        log.info(
+                            "  [%s] 签到成功! 连续 %d 天, 奖励: %s",
+                            now,
+                            d.get("consecutive", 0),
+                            d.get("reward_display", "unknown")
+                        )
+                        success = True
+                        break
+
+                elif "已签到" in result.get("msg", ""):
+                    log.info("  今天已签到，跳过")
+                    success = True
+                    break
+
                 else:
-                    log.warning("[%s] 重试签到返回: %s", now, result.get("msg"))
+                    log.warning("  签到返回异常: %s", json.dumps(result, ensure_ascii=False))
 
-            elif "已签到" in result.get("msg", ""):
-                log.info("[%s] 今天已签到，退出...", now)
-                sys.exit(0)
+            except requests.exceptions.RequestException as e:
+                log.error("  网络错误: %s", e)
+            except Exception as e:
+                log.error("  发生错误: %s", e)
 
-            else:
-                log.warning("[%s] 签到返回异常: %s", now, json.dumps(result, ensure_ascii=False))
+            if attempt < MAX_RETRIES:
+                log.info("  等待 %d 秒后重试...", RETRY_DELAY)
+                time.sleep(RETRY_DELAY)
 
-        except requests.exceptions.RequestException as e:
-            log.error("网络错误: %s", e)
-        except Exception as e:
-            log.error("发生错误: %s", e)
+        if not success:
+            log.error("账号 %s 签到失败（已达最大重试次数）", email)
 
-        if attempt < MAX_RETRIES:
-            log.info("等待 %d 秒后重试...", RETRY_DELAY)
-            time.sleep(RETRY_DELAY)
+        # 账号间稍作延迟，避免请求过快
+        if idx < len(accounts):
+            time.sleep(2)
 
-    log.error("已达到最大重试次数 (%d 次)，签到失败，退出。", MAX_RETRIES)
-    sys.exit(1)
+    log.info("所有账号处理完成，退出")
+    sys.exit(0)
 
 
 def do_start():
     """后台启动服务"""
-    if not EMAIL or not PASSWORD:
-        print("错误: 请设置环境变量 VIEWTURBO_EMAIL 和 VIEWTURBO_PASSWORD")
+    # 检查账号配置是否有效
+    try:
+        load_accounts()
+    except Exception as e:
+        print(f"错误: {e}")
         sys.exit(1)
+
     if is_running():
         pid = read_pid()
         print(f"服务已在运行中 (PID: {pid})")
         return
+
     pythonw = sys.executable.replace("python", "pythonw")
     if not os.path.exists(pythonw):
         pythonw = sys.executable
+
     proc = subprocess.Popen(
         [pythonw, __file__, "run"],
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         cwd=str(Path(__file__).parent),
     )
     print(f"服务已启动 (PID: {proc.pid})")
 
 
 def do_stop():
-    """停止服务"""
     pid = read_pid()
     if pid is None:
         print("服务未运行")
@@ -221,7 +257,6 @@ def do_stop():
 
 
 def do_status():
-    """查看服务状态"""
     if is_running():
         print(f"服务运行中 (PID: {read_pid()})")
     else:
@@ -229,7 +264,7 @@ def do_status():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ViewTurbo 自动签到")
+    parser = argparse.ArgumentParser(description="ViewTurbo 自动签到（多账号版）")
     parser.add_argument(
         "command",
         choices=["start", "stop", "status", "run"],
